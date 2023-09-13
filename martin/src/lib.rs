@@ -12,6 +12,7 @@ mod config;
 pub mod file_config;
 pub mod mbtiles;
 pub mod pg;
+pub mod cog;
 pub mod pmtiles;
 mod source;
 pub mod sprites;

@@ -9,6 +9,7 @@ use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
 use subst::VariableMap;
 
+use crate::cog::CogSource;
 use crate::file_config::{resolve_files, FileConfigEnum};
 use crate::mbtiles::MbtSource;
 use crate::pg::PgConfig;
@@ -39,6 +40,9 @@ pub struct Config {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mbtiles: Option<FileConfigEnum>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cogs: Option<FileConfigEnum>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sprites: Option<FileConfigEnum>,
@@ -93,6 +97,7 @@ impl Config {
     pub async fn resolve(&mut self, idr: IdResolver) -> Result<AllSources> {
         let create_pmt_src = &mut PmtSource::new_box;
         let create_mbt_src = &mut MbtSource::new_box;
+        let create_cog_src = &mut CogSource::new_box;
 
         let mut sources: Vec<Pin<Box<dyn Future<Output = Result<Sources>>>>> = Vec::new();
         if let Some(v) = self.postgres.as_mut() {
@@ -107,6 +112,11 @@ impl Config {
 
         if self.mbtiles.is_some() {
             let val = resolve_files(&mut self.mbtiles, idr.clone(), "mbtiles", create_mbt_src);
+            sources.push(Box::pin(val));
+        }
+
+        if self.cogs.is_some() {
+            let val = resolve_files(&mut self.cogs, idr.clone(), "mbtiles", create_cog_src);
             sources.push(Box::pin(val));
         }
 
