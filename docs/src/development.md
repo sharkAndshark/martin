@@ -17,7 +17,7 @@ Install [docker](https://docs.docker.com/get-docker/), [docker-compose](https://
 
 ```shell, ignore
 # For Ubuntu-based distros
-sudo apt install -y  docker.io  docker-compose  libssl-dev
+sudo apt install -y  docker.io  docker-compose  libssl-dev  build-essential  jq
 ```
 
 Install [Just](https://github.com/casey/just#readme) (improved makefile processor). Note that some Linux and Homebrew distros have outdated versions of Just, so you should install it from source:
