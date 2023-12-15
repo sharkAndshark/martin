@@ -94,7 +94,7 @@ jobs:
           cargo deb -v -p martin --output target/debian/martin.deb
           mv target/debian/martin.deb target_releases
       - name: Save build artifact build-${{ matrix.target }}
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.target }}
           path: target_releases/*
@@ -199,7 +199,7 @@ jobs:
         run: diff --brief --recursive --new-file tests/output tests/expected
       - name: Save test output on failure (Linux)
         if: failure() && matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: failed-test-output
           path: tests/output/*
@@ -314,7 +314,7 @@ jobs:
           DATABASE_URL: postgres://${{ env.PGUSER }}:${{ env.PGUSER }}@${{ env.PGHOST }}:${{ job.services.postgres.ports[5432] }}/${{ env.PGDATABASE }}?sslmode=${{ matrix.sslmode }}
       - name: Save test output on failure
         if: failure()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: test-output
           path: tests/output/*
