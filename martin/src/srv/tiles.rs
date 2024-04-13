@@ -1,7 +1,8 @@
+use actix_http::header::{Quality, QualityItem};
 use actix_http::ContentEncoding;
 use actix_web::error::{ErrorBadRequest, ErrorNotFound};
 use actix_web::http::header::{
-    AcceptEncoding, Encoding as HeaderEnc, Preference, CONTENT_ENCODING,
+    AcceptEncoding, Encoding as ActixEncoding, Encoding as HeaderEnc, Preference, CONTENT_ENCODING,
 };
 use actix_web::web::{Data, Path, Query};
 use actix_web::{route, HttpMessage, HttpRequest, HttpResponse, Result as ActixResult};
@@ -21,13 +22,7 @@ use crate::utils::{
 };
 use crate::{Tile, TileCoord, TileData};
 
-static PREFER_BROTLI_ENC: &[HeaderEnc] = &[
-    HeaderEnc::brotli(),
-    HeaderEnc::gzip(),
-    HeaderEnc::identity(),
-];
-
-static PREFER_GZIP_ENC: &[HeaderEnc] = &[
+static SUPPORTED_ENCODINGS: &[HeaderEnc] = &[
     HeaderEnc::gzip(),
     HeaderEnc::brotli(),
     HeaderEnc::identity(),
@@ -198,14 +193,17 @@ impl<'a> DynTileSource<'a> {
             }
 
             if tile.info.encoding == Encoding::Uncompressed {
-                let ordered_encodings = match self.preferred_enc {
-                    Some(PreferredEncoding::Gzip) | None => PREFER_GZIP_ENC,
-                    Some(PreferredEncoding::Brotli) => PREFER_BROTLI_ENC,
+                // let ordered_encodings = match self.preferred_enc {
+                //     Some(PreferredEncoding::Gzip) | None => PREFER_GZIP_ENC,
+                //     Some(PreferredEncoding::Brotli) => PREFER_BROTLI_ENC,
+                // };
+                let prefer = match self.preferred_enc {
+                    Some(PreferredEncoding::Gzip) | None => PreferredEncoding::Gzip,
+                    Some(PreferredEncoding::Brotli) => PreferredEncoding::Brotli,
                 };
 
                 // only apply compression if the content supports it
-                if let Some(HeaderEnc::Known(enc)) = accept_enc.negotiate(ordered_encodings.iter())
-                {
+                if let Some(HeaderEnc::Known(enc)) = negotiate(accept_enc, prefer) {
                     // (re-)compress the tile into the preferred encoding
                     tile = encode(tile, enc)?;
                 }
@@ -215,6 +213,122 @@ impl<'a> DynTileSource<'a> {
             // no accepted-encoding header, decode the tile if compressed
             decode(tile)
         }
+    }
+}
+
+fn negotiate(accept_enc: &AcceptEncoding, preferred_enc: PreferredEncoding) -> Option<HeaderEnc> {
+    if accept_enc.is_empty() {
+        // client can accept any(identity included)
+        return match preferred_enc {
+            PreferredEncoding::Brotli => Some(HeaderEnc::brotli()),
+            PreferredEncoding::Gzip => Some(HeaderEnc::gzip()),
+        };
+    };
+    // maybe client should just send a request withou accept-encoding header????
+    if accept_enc.0[0].item.is_any() && accept_enc.0.len() == 1 {
+        // client can accept any(identity included)
+        return match preferred_enc {
+            PreferredEncoding::Brotli => Some(HeaderEnc::brotli()),
+            PreferredEncoding::Gzip => Some(HeaderEnc::gzip()),
+        };
+    }
+
+    let acceptable_items = ranked_accept_items(accept_enc, preferred_enc).collect::<Vec<_>>();
+    let identity_acceptable = is_identity_acceptable(&acceptable_items);
+
+    let matched = acceptable_items
+        .into_iter()
+        .filter(|q| q.quality > Quality::ZERO)
+        // search relies on item list being in descending order of quality
+        .find(|q| {
+            let enc = &q.item;
+            matches!(enc, Preference::Specific(enc) if SUPPORTED_ENCODINGS.contains(enc))
+        })
+        .map(|q| q.item);
+    match matched {
+        Some(Preference::Specific(enc)) => Some(enc),
+
+        _ if identity_acceptable => Some(ActixEncoding::identity()),
+
+        _ => None,
+    }
+}
+/// Returns true if "identity" is an acceptable encoding.
+///
+/// Internal algorithm relies on item list being in descending order of quality.
+fn is_identity_acceptable(items: &'_ [QualityItem<Preference<ActixEncoding>>]) -> bool {
+    if items.is_empty() {
+        return true;
+    }
+
+    // Loop algorithm depends on items being sorted in descending order of quality. As such, it
+    // is sufficient to return (q > 0) when reaching either an "identity" or "*" item.
+    for q in items {
+        match (q.quality, &q.item) {
+            // occurrence of "identity;q=n"; return true if quality is non-zero
+            (q, Preference::Specific(ActixEncoding::Known(ContentEncoding::Identity))) => {
+                return q > Quality::ZERO
+            }
+
+            // occurrence of "*;q=n"; return true if quality is non-zero
+            (q, Preference::Any) => return q > Quality::ZERO,
+
+            _ => {}
+        }
+    }
+
+    // implicit acceptable identity
+    true
+}
+fn ranked_accept_items(
+    accept_enc: &AcceptEncoding,
+    prefer_encoding: PreferredEncoding,
+) -> impl Iterator<Item = QualityItem<Preference<ActixEncoding>>> {
+    if accept_enc.0.is_empty() {
+        return Vec::new().into_iter();
+    }
+
+    let mut types = accept_enc.0.clone();
+
+    // use stable sort so items with equal q-factor retain listed order
+    types.sort_by(|a, b| {
+        // sort by q-factor descending then server ranking descending
+
+        b.quality
+            .cmp(&a.quality)
+            .then(encoding_rank(b, prefer_encoding).cmp(&encoding_rank(a, prefer_encoding)))
+    });
+
+    types.into_iter()
+}
+fn encoding_rank(
+    qv: &QualityItem<Preference<ActixEncoding>>,
+    prefer_encoding: PreferredEncoding,
+) -> u8 {
+    if qv.quality == Quality::ZERO {
+        return 0;
+    }
+    match prefer_encoding {
+        PreferredEncoding::Gzip => match qv.item {
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Gzip)) => 5,
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Brotli)) => 4,
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Zstd)) => 3,
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Deflate)) => 2,
+            Preference::Any => 0,
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Identity)) => 0,
+            Preference::Specific(ActixEncoding::Known(_)) => 1,
+            Preference::Specific(ActixEncoding::Unknown(_)) => 1,
+        },
+        PreferredEncoding::Brotli => match qv.item {
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Brotli)) => 5,
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Gzip)) => 4,
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Zstd)) => 3,
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Deflate)) => 2,
+            Preference::Any => 0,
+            Preference::Specific(ActixEncoding::Known(ContentEncoding::Identity)) => 0,
+            Preference::Specific(ActixEncoding::Known(_)) => 1,
+            Preference::Specific(ActixEncoding::Unknown(_)) => 1,
+        },
     }
 }
 
@@ -272,6 +386,10 @@ mod tests {
 
     #[rstest]
     #[trace]
+    // maybe client should just send a request withou accept-encoding header????
+    #[case(&["*"],None,Encoding::Gzip)]
+    #[case(&["*"],Some(PreferredEncoding::Brotli), Encoding::Brotli)]
+    #[case(&["*"],Some(PreferredEncoding::Gzip), Encoding::Gzip)]
     #[case(&["gzip", "deflate", "br", "zstd"], None, Encoding::Gzip)]
     #[case(&["gzip", "deflate", "br", "zstd"], Some(PreferredEncoding::Brotli), Encoding::Brotli)]
     #[case(&["gzip", "deflate", "br", "zstd"], Some(PreferredEncoding::Gzip), Encoding::Gzip)]
