@@ -77,6 +77,7 @@ async-trait.workspace = true
 bit-set = { workspace = true, optional = true }
 brotli.workspace = true
 clap.workspace = true
+dashmap = "6.0.1"
 deadpool-postgres = { workspace = true, optional = true }
 enum-display.workspace = true
 env_logger.workspace = true
