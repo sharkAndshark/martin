@@ -71,7 +71,7 @@ impl ConfigExtras for SpriteConfig {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SpriteSources(HashMap<String, SpriteSource>);
+pub struct SpriteSources(DashMap<String, SpriteSource>);
 
 impl SpriteSources {
     pub fn resolve(config: &mut FileConfigEnum<SpriteConfig>) -> FileResult<Self> {
