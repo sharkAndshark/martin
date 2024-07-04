@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::path::PathBuf;
 
+use dashmap::DashMap;
 use futures::future::try_join_all;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -110,7 +111,9 @@ impl SpriteSources {
     pub fn get_catalog(&self) -> SpriteResult<SpriteCatalog> {
         // TODO: all sprite generation should be pre-cached
         let mut entries = SpriteCatalog::new();
-        for (id, source) in &self.0 {
+        for handle in &self.0 {
+            let id = handle.pair().0;
+            let source = handle.pair().1;
             let paths = get_svg_input_paths(&source.path, true)
                 .map_err(|e| SpriteProcessingError(e, source.path.clone()))?;
             let mut images = Vec::with_capacity(paths.len());
