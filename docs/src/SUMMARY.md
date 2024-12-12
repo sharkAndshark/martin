@@ -23,7 +23,7 @@
   - [Composite Sources](configuration-file/sources-composite.md)
   - [Sprite Sources](configuration-file/sources-sprites.md)
   - [Font Sources](configuration-file/sources-fonts.md)
-- [Usage and Endpoint API](using.md)
+- [Usage and Endpoint API](usage-and-api/using.md)
   - [Using with MapLibre](usage-and-api/using-with-maplibre.md)
   - [Using with Leaflet](usage-and-api/using-with-leaflet.md)
   - [Using with deck.gl](usage-and-api/using-with-deck-gl.md)
