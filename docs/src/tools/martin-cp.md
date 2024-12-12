@@ -6,7 +6,7 @@ into a new or an existing MBTiles file. `martin-cp` can be used to generate tile
 same configuration file and CLI arguments as Martin server, so it can support all sources and even combining sources.
 
 After copying, `martin-cp` will update the `agg_tiles_hash` metadata value unless `--skip-agg-tiles-hash` is specified.
-This allows the MBTiles file to be [validated](./mbtiles-validation.md#aggregate-content-validation)
+This allows the MBTiles file to be [validated](mbtiles-validation.md#aggregate-content-validation)
 using `mbtiles validate` command.
 
 ## Usage

@@ -7,7 +7,7 @@ accept [MVT vector tiles](https://github.com/mapbox/vector-tile-spec) generated 
 applies [a style](https://maplibre.org/maplibre-style-spec/) to them to draw a map using Web GL.
 
 You can add a layer to the map and specify Martin TileJSON endpoint as a vector source URL. You should also specify
-a `source-layer` property. For [Table Sources](sources-pg-tables.md) it is `{table_name}` by default.
+a `source-layer` property. For [Table Sources](../configuration-file/sources-pg-tables.md) it is `{table_name}` by default.
 
 ```js
 map.addLayer({
