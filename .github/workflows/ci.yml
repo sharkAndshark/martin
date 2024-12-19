@@ -327,7 +327,7 @@ jobs:
             os: ubuntu-latest
     steps:
       - name: Install and run Postgis
-        uses: nyurik/action-setup-postgis@v2
+        uses: sharkAndshark/action-setup-postgis@v2
         id: pg
         with: { username: 'test', password: 'test', database: 'test' }
       - name: Start NGINX
