@@ -38,12 +38,13 @@ pub struct CogSource {
 struct Meta {
     min_zoom: u8,
     max_zoom: u8,
-    zoom_and_ifd: HashMap<u8, usize>,
-    zoom_and_tile_across_down: HashMap<u8, (u32, u32)>,
+    tile_size: (u32, u32), // (width, height) of tiles/chunks
+    origin: [f64; 3],      // [x, y, z] coordinates
+    extent: [f64; 4],      // [minx, miny, maxx, maxy] bounds
     nodata: Option<f64>,
-    origin: [f64; 3],  // [x, y, z] coordinates
-    extent: [f64; 4],  // [minx, miny, maxx, maxy] bounds
-    resolutions: HashMap<u8, [f64; 3]>,  // Map of zoom level to [resX, resY, resZ]
+    zoom_and_ifd: HashMap<u8, usize>,
+    resolutions: HashMap<u8, [f64; 3]>, // Map of zoom level to [resX, resY, resZ]
+    zoom_and_tile_across_down: HashMap<u8, (u32, u32)>,
 }
 
 #[async_trait]
@@ -217,11 +218,40 @@ impl SourceConfigExtras for CogConfig {
     async fn new_sources(&self, id: String, path: PathBuf) -> FileResult<Box<dyn Source>> {
         let tileinfo = TileInfo::new(Format::Png, martin_tile_utils::Encoding::Uncompressed);
         let meta = get_meta(&path)?;
-        let tilejson = tilejson! {
+
+        // Create base tilejson
+        let mut tilejson = tilejson! {
             tiles: vec![],
             minzoom: meta.min_zoom,
             maxzoom: meta.max_zoom
         };
+
+        // Add COG-specific metadata to tilejson.other
+        let mut cog_info = serde_json::Map::new();
+
+        // Add extent bounds
+        cog_info.insert("extent".to_string(), serde_json::json!(meta.extent));
+
+        // Add origin coordinates
+        cog_info.insert("origin".to_string(), serde_json::json!(meta.origin));
+
+        // Add resolution information for each zoom level
+        cog_info.insert(
+            "resolutions".to_string(),
+            serde_json::json!(meta.resolutions),
+        );
+
+        // Add tile grid information
+        cog_info.insert(
+            "tileSize".to_string(),
+            serde_json::json!(meta.tile_size),
+        );
+
+        // Add all COG info to tilejson.other
+        tilejson
+            .other
+            .insert("cogMetadata".to_string(), serde_json::json!(cog_info));
+
         Ok(Box::new(CogSource {
             id,
             path,
@@ -351,19 +381,21 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     // Calculate resolutions for each zoom level
     let mut resolutions = HashMap::new();
     for image_ifd in &images_ifd {
-        decoder.seek_to_image(*image_ifd)
+        decoder
+            .seek_to_image(*image_ifd)
             .map_err(|e| CogError::IfdSeekFailed(e, *image_ifd, path.clone()))?;
 
         let zoom = u8::try_from(images_ifd.len() - (image_ifd + 1))
             .map_err(|_| CogError::TooManyImages(path.clone()))?;
 
-        let (img_width, img_height) = decoder.dimensions()
-            .map_err(|e| CogError::TagsNotFound(
+        let (img_width, img_height) = decoder.dimensions().map_err(|e| {
+            CogError::TagsNotFound(
                 e,
                 vec![Tag::ImageWidth.to_u16(), Tag::ImageLength.to_u16()],
                 *image_ifd,
                 path.to_path_buf(),
-            ))?;
+            )
+        })?;
 
         let resolution = get_resolution(
             pixel_scale.as_deref(),
@@ -377,6 +409,8 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
         resolutions.insert(zoom, resolution);
     }
 
+    let chunk_dims = decoder.chunk_dimensions();
+
     Ok(Meta {
         min_zoom: *min_zoom,
         max_zoom: *max_zoom,
@@ -386,6 +420,7 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
         origin,
         extent,
         resolutions,
+        tile_size: chunk_dims,
     })
 }
 
