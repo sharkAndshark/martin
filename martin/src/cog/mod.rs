@@ -43,6 +43,7 @@ struct Meta {
     nodata: Option<f64>,
     origin: [f64; 3],  // [x, y, z] coordinates
     extent: [f64; 4],  // [minx, miny, maxx, maxy] bounds
+    resolutions: HashMap<u8, [f64; 3]>,  // Map of zoom level to [resX, resY, resZ]
 }
 
 #[async_trait]
@@ -339,13 +340,42 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     )?;
 
     let extent = get_extent(
-        model_transformation,
-        model_tiepoint,
-        pixel_scale,
+        model_transformation.clone(),
+        model_tiepoint.clone(),
+        pixel_scale.clone(),
         width,
         height,
         path.clone(),
     )?;
+
+    // Calculate resolutions for each zoom level
+    let mut resolutions = HashMap::new();
+    for image_ifd in &images_ifd {
+        decoder.seek_to_image(*image_ifd)
+            .map_err(|e| CogError::IfdSeekFailed(e, *image_ifd, path.clone()))?;
+
+        let zoom = u8::try_from(images_ifd.len() - (image_ifd + 1))
+            .map_err(|_| CogError::TooManyImages(path.clone()))?;
+
+        let (img_width, img_height) = decoder.dimensions()
+            .map_err(|e| CogError::TagsNotFound(
+                e,
+                vec![Tag::ImageWidth.to_u16(), Tag::ImageLength.to_u16()],
+                *image_ifd,
+                path.to_path_buf(),
+            ))?;
+
+        let resolution = get_resolution(
+            pixel_scale.as_deref(),
+            model_transformation.as_deref(),
+            None,
+            img_width,
+            img_height,
+            path,
+        )?;
+
+        resolutions.insert(zoom, resolution);
+    }
 
     Ok(Meta {
         min_zoom: *min_zoom,
@@ -354,7 +384,8 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
         zoom_and_tile_across_down,
         nodata,
         origin,
-        extent,  // Add extent to Meta construction
+        extent,
+        resolutions,
     })
 }
 
