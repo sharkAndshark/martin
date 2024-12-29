@@ -431,6 +431,39 @@ fn get_extent_from_tiepoint(
     Ok([x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2)])
 }
 
+/// Get the origin [x, y, z] coordinates from either ModelTransformation or ModelTiepoint
+/// 
+/// The origin is determined in the following order:
+/// 1. If ModelTransformation is present, use [transform[3], transform[7], transform[11]]
+/// 2. If ModelTiepoint is present, use [tiepoint[3], tiepoint[4], tiepoint[5]]
+/// 3. Otherwise return an error
+///
+/// @param model_transformation Optional ModelTransformation matrix (3x4)
+/// @param model_tiepoint Optional ModelTiepoint coordinates
+/// @param path Path to the TIFF file for error reporting
+/// @returns Result with [x, y, z] origin coordinates
+fn get_origin(
+    model_transformation: Option<&[f64]>,
+    model_tiepoint: Option<&[f64]>,
+    path: &PathBuf,
+) -> Result<[f64; 3], CogError> {
+    match (model_transformation, model_tiepoint) {
+        (Some(transform), _) => {
+            if transform.len() < 12 {
+                return Err(CogError::InvalidModelTransformation(transform.len()));
+            }
+            Ok([transform[3], transform[7], transform[11]])
+        }
+        (None, Some(tiepoint)) => {
+            if tiepoint.len() < 6 {
+                return Err(CogError::InvalidModelTiepoint(tiepoint.len()));
+            }
+            Ok([tiepoint[3], tiepoint[4], tiepoint[5]])
+        }
+        (None, None) => Err(CogError::CannotDetermineOrigin(path.clone())),
+    }
+}
+
 fn get_grid_dims(
     decoder: &mut Decoder<File>,
     path: &Path,
@@ -481,4 +514,35 @@ fn get_images_ifd(decoder: &mut Decoder<File>) -> Vec<usize> {
         }
     }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_origin() {
+        let path = PathBuf::from("test.tiff");
+        
+        // Test with ModelTransformation
+        let transform = vec![1.0, 0.0, 0.0, 100.0, 0.0, 1.0, 0.0, 200.0, 0.0, 0.0, 1.0, 300.0];
+        let origin = get_origin(Some(&transform), None, &path).unwrap();
+        assert_eq!(origin, [100.0, 200.0, 300.0]);
+
+        // Test with ModelTiepoint
+        let tiepoint = vec![0.0, 0.0, 0.0, 400.0, 500.0, 600.0];
+        let origin = get_origin(None, Some(&tiepoint), &path).unwrap();
+        assert_eq!(origin, [400.0, 500.0, 600.0]);
+
+        // Test with invalid ModelTransformation
+        let invalid_transform = vec![1.0, 2.0];
+        assert!(get_origin(Some(&invalid_transform), None, &path).is_err());
+
+        // Test with invalid ModelTiepoint
+        let invalid_tiepoint = vec![1.0, 2.0];
+        assert!(get_origin(None, Some(&invalid_tiepoint), &path).is_err());
+
+        // Test with no data
+        assert!(get_origin(None, None, &path).is_err());
+    }
 }

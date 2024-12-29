@@ -60,4 +60,7 @@ pub enum CogError {
 
     #[error("Invalid ModelTransformationTag: expected at least 12 values for 3x4 matrix, got {0}")]
     InvalidModelTransformation(usize),
+
+    #[error("Could not determine origin from {0}. Either ModelTransformationTag or ModelTiepointTag is required")]
+    CannotDetermineOrigin(PathBuf),
 }
