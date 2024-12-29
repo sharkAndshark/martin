@@ -464,6 +464,81 @@ fn get_origin(
     }
 }
 
+// ...existing code...
+
+/// Get the resolution [x, y, z] from either ModelTransformation or ModelPixelScale
+/// 
+/// The resolution is determined in the following order:
+/// 1. If ModelPixelScale is present, use [scaleX, -scaleY, scaleZ]
+/// 2. If ModelTransformation is present:
+///    - If matrix is axis-aligned (no rotation), use [M00, -M11, M22]
+///    - Otherwise calculate magnitude of transformation vectors
+/// 3. If reference image is provided, calculate relative resolution
+/// 4. Otherwise return an error
+///
+/// @param model_pixel_scale Optional ModelPixelScale values
+/// @param model_transformation Optional ModelTransformation matrix (3x4)
+/// @param reference Optional reference image dimensions and resolution
+/// @param width Current image width
+/// @param height Current image height
+/// @param path Path to the TIFF file for error reporting
+/// @returns Result with [resX, resY, resZ] resolution values
+#[derive(Debug)]
+pub struct ReferenceImage {
+    pub width: u32,
+    pub height: u32,
+    pub resolution: [f64; 3],
+}
+
+fn get_resolution(
+    model_pixel_scale: Option<&[f64]>,
+    model_transformation: Option<&[f64]>,
+    reference: Option<&ReferenceImage>,
+    width: u32,
+    height: u32,
+    path: &PathBuf,
+) -> Result<[f64; 3], CogError> {
+    if let Some(pixel_scale) = model_pixel_scale {
+        if pixel_scale.len() < 3 {
+            return Err(CogError::InvalidModelPixelScale(pixel_scale.len()));
+        }
+        return Ok([pixel_scale[0], -pixel_scale[1], pixel_scale[2]]);
+    }
+
+    if let Some(transform) = model_transformation {
+        if transform.len() < 12 {
+            return Err(CogError::InvalidModelTransformation(transform.len()));
+        }
+
+        // Check if matrix is axis-aligned (no rotation)
+        if transform[1] == 0.0 && transform[4] == 0.0 {
+            return Ok([transform[0], -transform[5], transform[10]]);
+        }
+
+        // Calculate magnitude of transformation vectors for rotated case
+        let res_x = (transform[0] * transform[0] + transform[4] * transform[4]).sqrt();
+        let res_y = -((transform[1] * transform[1] + transform[5] * transform[5]).sqrt());
+        let res_z = transform[10];
+
+        return Ok([res_x, res_y, res_z]);
+    }
+
+    if let Some(ref_img) = reference {
+        if ref_img.width == 0 || ref_img.height == 0 {
+            return Err(CogError::InvalidReferenceImageDimensions(path.clone()));
+        }
+
+        // Calculate relative resolution based on reference image
+        let res_x = ref_img.resolution[0] * (ref_img.width as f64) / (width as f64);
+        let res_y = ref_img.resolution[1] * (ref_img.height as f64) / (height as f64);
+        let res_z = ref_img.resolution[2] * (ref_img.width as f64) / (width as f64);
+
+        return Ok([res_x, res_y, res_z]);
+    }
+
+    Err(CogError::CannotDetermineResolution(path.clone()))
+}
+
 fn get_grid_dims(
     decoder: &mut Decoder<File>,
     path: &Path,
@@ -544,5 +619,45 @@ mod tests {
 
         // Test with no data
         assert!(get_origin(None, None, &path).is_err());
+    }
+
+    #[test]
+    fn test_get_resolution() {
+        let path = PathBuf::from("test.tiff");
+
+        // Test with ModelPixelScale
+        let pixel_scale = vec![10.0, 20.0, 30.0];
+        let res = get_resolution(Some(&pixel_scale), None, None, 100, 100, &path).unwrap();
+        assert_eq!(res, [10.0, -20.0, 30.0]);
+
+        // Test with axis-aligned ModelTransformation
+        let transform = vec![2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let res = get_resolution(None, Some(&transform), None, 100, 100, &path).unwrap();
+        assert_eq!(res, [2.0, -3.0, 1.0]);
+
+        // Test with rotated ModelTransformation
+        let transform = vec![2.0, 1.0, 0.0, 0.0, -1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let res = get_resolution(None, Some(&transform), None, 100, 100, &path).unwrap();
+        assert!(approx_eq(res[0], 2.236067977499790));
+        assert!(approx_eq(res[1], -2.236067977499790));
+        assert_eq!(res[2], 1.0);
+
+        // Test with reference image
+        let reference = ReferenceImage {
+            width: 200,
+            height: 200,
+            resolution: [10.0, -10.0, 1.0],
+        };
+        let res = get_resolution(None, None, Some(&reference), 100, 100, &path).unwrap();
+        assert_eq!(res, [20.0, -20.0, 2.0]);
+
+        // Test invalid cases
+        assert!(get_resolution(None, None, None, 100, 100, &path).is_err());
+        assert!(get_resolution(Some(&vec![1.0]), None, None, 100, 100, &path).is_err());
+        assert!(get_resolution(None, Some(&vec![1.0]), None, 100, 100, &path).is_err());
+    }
+
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-10
     }
 }

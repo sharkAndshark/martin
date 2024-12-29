@@ -63,4 +63,10 @@ pub enum CogError {
 
     #[error("Could not determine origin from {0}. Either ModelTransformationTag or ModelTiepointTag is required")]
     CannotDetermineOrigin(PathBuf),
+
+    #[error("Could not determine resolution from {0}. Either ModelTransformationTag or ModelPixelScaleTag is required")]
+    CannotDetermineResolution(PathBuf),
+
+    #[error("Invalid resolution reference image dimensions for {0}")]
+    InvalidReferenceImageDimensions(PathBuf),
 }
