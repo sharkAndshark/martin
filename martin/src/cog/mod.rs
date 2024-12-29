@@ -357,19 +357,17 @@ fn get_extent(
     path: PathBuf,
 ) -> Result<[f64; 4], CogError> {
     match (model_transformation, model_tiepoint, pixel_scale) {
-        (Some(transform), _, _) => {
-            get_extent_from_transform(&transform, width, height)
-        }
+        (Some(transform), _, _) => get_extent_from_transform(&transform, width, height),
         (None, Some(tiepoint), Some(pixel_scale)) => {
             get_extent_from_tiepoint(&tiepoint, &pixel_scale, width, height)
         }
-        _ => Err(CogError::MissingGeospatialInfo(path))
+        _ => Err(CogError::MissingGeospatialInfo(path)),
     }
 }
 
 /// Calculate the extent [minx, miny, maxx, maxy] using model transformation matrix
 fn get_extent_from_transform(
-    transform: &[f64], 
+    transform: &[f64],
     width: u32,
     height: u32,
 ) -> Result<[f64; 4], CogError> {
@@ -421,7 +419,7 @@ fn get_extent_from_tiepoint(
         return Err(CogError::InvalidModelPixelScale(pixel_scale.len()));
     }
 
-    let x1 = tiepoint[3]; // Origin X 
+    let x1 = tiepoint[3]; // Origin X
     let y1 = tiepoint[4]; // Origin Y
 
     // Calculate max extent using resolution/pixel scale
@@ -432,7 +430,7 @@ fn get_extent_from_tiepoint(
 }
 
 /// Get the origin [x, y, z] coordinates from either ModelTransformation or ModelTiepoint
-/// 
+///
 /// The origin is determined in the following order:
 /// 1. If ModelTransformation is present, use [transform[3], transform[7], transform[11]]
 /// 2. If ModelTiepoint is present, use [tiepoint[3], tiepoint[4], tiepoint[5]]
@@ -467,7 +465,7 @@ fn get_origin(
 // ...existing code...
 
 /// Get the resolution [x, y, z] from either ModelTransformation or ModelPixelScale
-/// 
+///
 /// The resolution is determined in the following order:
 /// 1. If ModelPixelScale is present, use [scaleX, -scaleY, scaleZ]
 /// 2. If ModelTransformation is present:
@@ -598,9 +596,11 @@ mod tests {
     #[test]
     fn test_get_origin() {
         let path = PathBuf::from("test.tiff");
-        
+
         // Test with ModelTransformation
-        let transform = vec![1.0, 0.0, 0.0, 100.0, 0.0, 1.0, 0.0, 200.0, 0.0, 0.0, 1.0, 300.0];
+        let transform = vec![
+            1.0, 0.0, 0.0, 100.0, 0.0, 1.0, 0.0, 200.0, 0.0, 0.0, 1.0, 300.0,
+        ];
         let origin = get_origin(Some(&transform), None, &path).unwrap();
         assert_eq!(origin, [100.0, 200.0, 300.0]);
 
