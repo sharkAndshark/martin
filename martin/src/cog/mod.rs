@@ -242,10 +242,7 @@ impl SourceConfigExtras for CogConfig {
         );
 
         // Add tile grid information
-        cog_info.insert(
-            "tileSize".to_string(),
-            serde_json::json!(meta.tile_size),
-        );
+        cog_info.insert("tileSize".to_string(), serde_json::json!(meta.tile_size));
 
         // Add all COG info to tilejson.other
         tilejson
