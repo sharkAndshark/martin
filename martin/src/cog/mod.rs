@@ -41,6 +41,7 @@ struct Meta {
     zoom_and_ifd: HashMap<u8, usize>,
     zoom_and_tile_across_down: HashMap<u8, (u32, u32)>,
     nodata: Option<f64>,
+    origin: [f64; 3],  // Add origin field as [x, y, z]
 }
 
 #[async_trait]
@@ -329,6 +330,13 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     let model_tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag).ok();
     let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
 
+    // Get origin before extent
+    let origin = get_origin(
+        model_transformation.as_deref(),
+        model_tiepoint.as_deref(),
+        path,
+    )?;
+
     let _extent = get_extent(
         model_transformation,
         model_tiepoint,
@@ -344,6 +352,7 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
         zoom_and_ifd,
         zoom_and_tile_across_down,
         nodata,
+        origin,  // Add origin to Meta construction
     })
 }
 
