@@ -315,6 +315,29 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
         .keys()
         .max()
         .ok_or_else(|| CogError::NoImagesFound(path.clone()))?;
+
+    let (width, height) = decoder.dimensions().map_err(|e| {
+        CogError::TagsNotFound(
+            e,
+            vec![Tag::ImageWidth.to_u16(), Tag::ImageLength.to_u16()],
+            0,
+            path.to_path_buf(),
+        )
+    })?;
+
+    let model_transformation = decoder.get_tag_f64_vec(Tag::ModelTransformationTag).ok();
+    let model_tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag).ok();
+    let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
+
+    let _extent = get_extent(
+        model_transformation,
+        model_tiepoint,
+        pixel_scale,
+        width,
+        height,
+        path.clone(),
+    )?;
+
     Ok(Meta {
         min_zoom: *min_zoom,
         max_zoom: *max_zoom,
@@ -322,6 +345,90 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
         zoom_and_tile_across_down,
         nodata,
     })
+}
+
+/// Calculate the extent [minx, miny, maxx, maxy] of a GeoTIFF image
+fn get_extent(
+    model_transformation: Option<Vec<f64>>,
+    model_tiepoint: Option<Vec<f64>>,
+    pixel_scale: Option<Vec<f64>>,
+    width: u32,
+    height: u32,
+    path: PathBuf,
+) -> Result<[f64; 4], CogError> {
+    match (model_transformation, model_tiepoint, pixel_scale) {
+        (Some(transform), _, _) => {
+            get_extent_from_transform(&transform, width, height)
+        }
+        (None, Some(tiepoint), Some(pixel_scale)) => {
+            get_extent_from_tiepoint(&tiepoint, &pixel_scale, width, height)
+        }
+        _ => Err(CogError::MissingGeospatialInfo(path))
+    }
+}
+
+/// Calculate the extent [minx, miny, maxx, maxy] using model transformation matrix
+fn get_extent_from_transform(
+    transform: &[f64], 
+    width: u32,
+    height: u32,
+) -> Result<[f64; 4], CogError> {
+    // ModelTransformationTag should have at least 12 values for a 3x4 matrix
+    if transform.len() < 12 {
+        return Err(CogError::InvalidModelTransformation(transform.len()));
+    }
+
+    let corners = [
+        (0.0, 0.0),
+        (0.0, height as f64),
+        (width as f64, 0.0),
+        (width as f64, height as f64),
+    ];
+
+    let mut xs = Vec::with_capacity(4);
+    let mut ys = Vec::with_capacity(4);
+
+    // Apply transformation matrix to each corner
+    for (i, j) in corners {
+        let x = transform[3] + (transform[0] * i) + (transform[1] * j);
+        let y = transform[7] + (transform[4] * i) + (transform[5] * j);
+        xs.push(x);
+        ys.push(y);
+    }
+
+    Ok([
+        *xs.iter().min_by(|a, b| a.total_cmp(b)).unwrap(),
+        *ys.iter().min_by(|a, b| a.total_cmp(b)).unwrap(),
+        *xs.iter().max_by(|a, b| a.total_cmp(b)).unwrap(),
+        *ys.iter().max_by(|a, b| a.total_cmp(b)).unwrap(),
+    ])
+}
+
+/// Calculate the extent [minx, miny, maxx, maxy] using model tiepoint and pixel scale
+fn get_extent_from_tiepoint(
+    tiepoint: &[f64],
+    pixel_scale: &[f64],
+    width: u32,
+    height: u32,
+) -> Result<[f64; 4], CogError> {
+    // ModelTiepointTag should have at least 6 values (I,J,K,X,Y,Z)
+    if tiepoint.len() < 6 {
+        return Err(CogError::InvalidModelTiepoint(tiepoint.len()));
+    }
+
+    // ModelPixelScaleTag should have 3 values (ScaleX, ScaleY, ScaleZ)
+    if pixel_scale.len() < 3 {
+        return Err(CogError::InvalidModelPixelScale(pixel_scale.len()));
+    }
+
+    let x1 = tiepoint[3]; // Origin X 
+    let y1 = tiepoint[4]; // Origin Y
+
+    // Calculate max extent using resolution/pixel scale
+    let x2 = x1 + (pixel_scale[0] * width as f64);
+    let y2 = y1 + (pixel_scale[1] * height as f64);
+
+    Ok([x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2)])
 }
 
 fn get_grid_dims(

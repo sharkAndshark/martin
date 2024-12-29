@@ -48,4 +48,16 @@ pub enum CogError {
 
     #[error("Striped tiff file is not supported, the tiff file is {0}")]
     NotSupportedChunkType(PathBuf),
+
+    #[error("No geospatial information found in {0}. Either ModelTransformationTag or both ModelTiepointTag and ModelPixelScaleTag are required")]
+    MissingGeospatialInfo(PathBuf),
+
+    #[error("Invalid ModelTiepointTag: expected at least 6 values, got {0}")]
+    InvalidModelTiepoint(usize),
+
+    #[error("Invalid ModelPixelScaleTag: expected at least 3 values, got {0}")]
+    InvalidModelPixelScale(usize),
+
+    #[error("Invalid ModelTransformationTag: expected at least 12 values for 3x4 matrix, got {0}")]
+    InvalidModelTransformation(usize),
 }
