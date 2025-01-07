@@ -65,6 +65,9 @@ clean-test:
 # Start a test database
 start: (docker-up "db") docker-is-ready
 
+# Start a test latest database
+start-latest: (docker-up "db-latest") docker-is-ready
+
 # Start an ssl-enabled test database
 start-ssl: (docker-up "db-ssl") docker-is-ready
 
@@ -129,6 +132,9 @@ bench-http: (cargo-install "oha")
 # Run all tests using a test database
 test: start (test-cargo "--all-targets") test-doc test-int
 
+# Run all tests using a test database
+test-latest: start-latest (test-cargo "--all-targets") test-doc test-int
+
 # Run all tests using an SSL connection to a test database. Expected output won't match.
 test-ssl: start-ssl (test-cargo "--all-targets") test-doc clean-test
     tests/test.sh
@@ -172,7 +178,7 @@ test-int: clean-test install-sqlx
         echo "** Skipping diffing with the expected output"
     else
         echo "** Comparing actual output with expected output..."
-        if ! diff --brief --recursive --new-file tests/output tests/expected; then
+        if ! diff --brief --recursive --new-file --exclude='*.pbf' tests/output tests/expected; then
             echo "** Expected output does not match actual output"
             echo "** If this is expected, run 'just bless' to update expected output"
             exit 1

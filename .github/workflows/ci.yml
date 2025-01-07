@@ -126,6 +126,8 @@ jobs:
         # https://github.com/docker/setup-qemu-action
         with:
           platforms: linux/amd64,linux/arm64
+      - name: Set up gdal-bin
+        run: sudo apt-get install -y gdal-bin
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         # https://github.com/docker/setup-buildx-action
@@ -337,6 +339,9 @@ jobs:
         with: { port: '5412', output-unix-paths: 'yes' }
       - name: Checkout sources
         uses: actions/checkout@v4
+      - name: Install gdal-bin
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y gdal-bin
       - name: Init database
         run: |
           echo "DATABASE_URL=${{ steps.pg.outputs.connection-uri }}"
@@ -366,7 +371,7 @@ jobs:
           DATABASE_URL: ${{ steps.pg.outputs.connection-uri }}
       - name: Compare test output results (Linux)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: diff --brief --recursive --new-file tests/output tests/expected
+        run: diff --brief --recursive --new-file --exclude='*.pbf' tests/output tests/expected
       - name: Download Debian package (Linux)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/download-artifact@v4
@@ -455,6 +460,8 @@ jobs:
         uses: nyurik/action-setup-nginx@v1.1
         id: nginx
         with: { port: '5412', output-unix-paths: 'yes' }
+      - name: Install gdal-bin
+        run: sudo apt-get install -y gdal-bin
       - name: Copy static files
         run: cp -r tests/fixtures/pmtiles2/* ${{ steps.nginx.outputs.html-dir }}
       - name: Init database

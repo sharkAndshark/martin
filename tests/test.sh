@@ -20,6 +20,9 @@ MARTIN_CP_BIN="${MARTIN_CP_BIN:-target/debug/martin-cp}"
 MBTILES_BIN="${MBTILES_BIN:-target/debug/mbtiles}"
 
 TEST_OUT_BASE_DIR="$(dirname "$0")/output"
+rm -rf "$TEST_OUT_BASE_DIR"
+mkdir -p "$TEST_OUT_BASE_DIR"
+
 LOG_DIR="${LOG_DIR:-target/test_logs}"
 mkdir -p "$LOG_DIR"
 
@@ -95,7 +98,10 @@ test_pbf() {
 
   if [[ $OSTYPE == linux* ]]; then
     ./tests/fixtures/vtzero-check "$FILENAME"
-    ./tests/fixtures/vtzero-show "$FILENAME" > "$FILENAME.txt"
+    # see https://gdal.org/en/stable/programs/ogrmerge.html#ogrmerge
+    ogrmerge.py -o "$FILENAME.geojson" "$FILENAME" -single -src_layer_field_name "source_mvt_layer" -src_layer_field_content "{LAYER_NAME}" -f "GeoJSON" -overwrite_ds
+    jq --sort-keys '.features |= sort_by(.properties.source_mvt_layer, .properties.gid) | walk(if type == "number" then .+0.0 else . end)' "$FILENAME.geojson" > "$FILENAME.sorted.geojson"
+    mv "$FILENAME.sorted.geojson" "$FILENAME.geojson"
   fi
 }
 
