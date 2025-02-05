@@ -2,6 +2,7 @@ mod errors;
 
 pub use errors::CogError;
 use log::warn;
+use regex::Regex;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -337,6 +338,293 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     })
 }
 
+fn google_stuffs(
+    min_zoom: u8,
+    max_zoom: u8,
+    decoder: &mut Decoder<File>,
+    chunk_size: u32,
+    path: &PathBuf,
+) -> Result<(), CogError> {
+    let gdal_metadata = decoder
+        .get_tag_ascii_string(Tag::Unknown(42112))
+        .map_err(|e| CogError::TagsNotFound(e, vec![42112], 0, PathBuf::new()))?;
+
+    let mut tiling_schema_name = None;
+    let mut zoom_level: Option<u8> = None;
+
+    let re_name = Regex::new(r#"<Item name="NAME" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
+    let re_zoom =
+        Regex::new(r#"<Item name="ZOOM_LEVEL" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
+
+    if let Some(caps) = re_name.captures(&gdal_metadata) {
+        tiling_schema_name = Some(caps[1].to_string());
+    }
+
+    if let Some(caps) = re_zoom.captures(&gdal_metadata) {
+        zoom_level = caps[1].parse().ok();
+    }
+
+    let google_compatible_max_zoom =
+        if tiling_schema_name == Some("GoogleMapsCompatible".to_string()) {
+            zoom_level
+        } else {
+            None
+        };
+    let google_compatible_min_zoom =
+        google_compatible_max_zoom.map(|google_max_zoom| google_max_zoom - max_zoom + min_zoom);
+    let zoom_mapping = |zoom: u8| -> Option<u8> {
+        let result = if let Some(google_max) = google_compatible_max_zoom {
+            Some(max_zoom - google_max + zoom)
+        } else {
+            None
+        };
+        if result.is_some_and(|v| v < min_zoom || v > max_zoom) {
+            None
+        } else {
+            result
+        }
+    };
+
+    let model_transformation = decoder.get_tag_f64_vec(Tag::ModelTransformationTag).ok();
+    let model_tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag).ok();
+    let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
+
+    let mut first_xy = HashMap::new();
+    for z in min_zoom..max_zoom {
+        let first_tile_center = get_first_tile_center_coords(
+            model_transformation.as_deref(),
+            model_tiepoint.as_deref(),
+            pixel_scale.as_deref(),
+            chunk_size,
+            path.clone(),
+            z,
+        )?;
+
+        let google_xy = get_tile_coords(
+            first_tile_center.0,
+            first_tile_center.1,
+            google_compatible_max_zoom.unwrap() as u32,
+        );
+        let google_zoom = zoom_mapping(z).ok_or_else(|| {
+            CogError::ZoomOutOfRange(
+                z,
+                path.clone(),
+                google_compatible_min_zoom.unwrap(),
+                google_compatible_max_zoom.unwrap(),
+            )
+        })?;
+        first_xy.insert(z, google_xy);
+    }
+    let xy_mapping = |zoom: u8, x: u32, y: u32| -> Option<(u32, u32)> {
+        let (first_x, first_y) = first_xy.get(&zoom)?;
+        let (google_x, google_y) = get_tile_coords(*first_x, *first_y, google_compatible_max_zoom?);
+        let new_x = google_x + x;
+        let new_y = google_y + y;
+        Some((new_x, new_y))
+    };
+    todo!()
+}
+
+pub fn get_first_tile_center_coords(
+    model_transformation: Option<&[f64]>,
+    model_tiepoint: Option<&[f64]>,
+    pixel_scale: Option<&[f64]>,
+    chunk_size: u32,
+    path: PathBuf,
+    zoom: u8, // Add zoom parameter
+) -> Result<(f64, f64), CogError> {
+    let zoom_factor = 2_u32.pow(zoom as u32);
+    let tile_size = chunk_size as f64 / zoom_factor as f64;
+
+    let (x, y) = if let Some(transform) = model_transformation {
+        // Using model transformation
+        let center_x = transform[0] + (tile_size / 2.0) * transform[1];
+        let center_y = transform[3] + (tile_size / 2.0) * transform[5];
+        (center_x, center_y)
+    } else if let (Some(tiepoint), Some(scale)) = (model_tiepoint, pixel_scale) {
+        // Using tiepoint and pixel scale
+        let center_x = tiepoint[3] + (tile_size / 2.0) * scale[0];
+        let center_y = tiepoint[4] - (tile_size / 2.0) * scale[1];
+        (center_x, center_y)
+    } else {
+        //todo help me generate error
+        return Err(CogError::MissingGeospatialInfo(path));
+    };
+
+    Ok((x, y))
+}
+
+fn get_tile_coords(coord_x: f64, coord_y: f64, zoom: u32) -> (u32, u32) {
+    const EARTH_RADIUS_PI: f64 = 20037508.34;
+    let num_tiles = 2_u32.pow(zoom) as f64;
+    let tile_size = (2.0 * EARTH_RADIUS_PI) / num_tiles;
+
+    let x_tile = ((coord_x + EARTH_RADIUS_PI) / tile_size).floor() as u32;
+    let y_tile = ((EARTH_RADIUS_PI - coord_y) / tile_size).floor() as u32;
+
+    (x_tile, y_tile)
+}
+
+fn get_origin(
+    model_transformation: Option<&[f64]>,
+    model_tiepoint: Option<&[f64]>,
+    path: &PathBuf,
+) -> Result<[f64; 3], CogError> {
+    match (model_transformation, model_tiepoint) {
+        (Some(transform), _) => {
+            if transform.len() < 12 {
+                return Err(CogError::InvalidModelTransformation(transform.len()));
+            }
+            Ok([transform[3], transform[7], transform[11]])
+        }
+        (None, Some(tiepoint)) => {
+            if tiepoint.len() < 6 {
+                return Err(CogError::InvalidModelTiepoint(tiepoint.len()));
+            }
+            Ok([tiepoint[3], tiepoint[4], tiepoint[5]])
+        }
+        (None, None) => Err(CogError::CannotDetermineOrigin(path.clone())),
+    }
+}
+
+#[derive(Debug)]
+struct ReferenceImage {
+    width: u32,
+    height: u32,
+    resolution: [f64; 3],
+}
+
+fn get_resolution(
+    model_pixel_scale: Option<&[f64]>,
+    model_transformation: Option<&[f64]>,
+    reference: Option<&ReferenceImage>,
+    width: u32,
+    height: u32,
+    path: &PathBuf,
+) -> Result<[f64; 3], CogError> {
+    if let Some(pixel_scale) = model_pixel_scale {
+        if pixel_scale.len() < 3 {
+            return Err(CogError::InvalidModelPixelScale(pixel_scale.len()));
+        }
+        return Ok([pixel_scale[0], -pixel_scale[1], pixel_scale[2]]);
+    }
+
+    if let Some(transform) = model_transformation {
+        if transform.len() < 12 {
+            return Err(CogError::InvalidModelTransformation(transform.len()));
+        }
+
+        // Check if matrix is axis-aligned (no rotation)
+        if transform[1] == 0.0 && transform[4] == 0.0 {
+            return Ok([transform[0], -transform[5], transform[10]]);
+        }
+
+        // Calculate magnitude of transformation vectors for rotated case
+        let res_x = (transform[0] * transform[0] + transform[4] * transform[4]).sqrt();
+        let res_y = -((transform[1] * transform[1] + transform[5] * transform[5]).sqrt());
+        let res_z = transform[10];
+
+        return Ok([res_x, res_y, res_z]);
+    }
+
+    if let Some(ref_img) = reference {
+        if ref_img.width == 0 || ref_img.height == 0 {
+            return Err(CogError::InvalidReferenceImageDimensions(path.clone()));
+        }
+
+        // Calculate relative resolution based on reference image
+        let res_x = ref_img.resolution[0] * (ref_img.width as f64) / (width as f64);
+        let res_y = ref_img.resolution[1] * (ref_img.height as f64) / (height as f64);
+        let res_z = ref_img.resolution[2] * (ref_img.width as f64) / (width as f64);
+
+        return Ok([res_x, res_y, res_z]);
+    }
+
+    Err(CogError::CannotDetermineResolution(path.clone()))
+}
+
+fn get_extent(
+    model_transformation: Option<Vec<f64>>,
+    model_tiepoint: Option<Vec<f64>>,
+    pixel_scale: Option<Vec<f64>>,
+    width: u32,
+    height: u32,
+    path: PathBuf,
+) -> Result<[f64; 4], CogError> {
+    match (model_transformation, model_tiepoint, pixel_scale) {
+        (Some(transform), _, _) => get_extent_from_transform(&transform, width, height),
+        (None, Some(tiepoint), Some(pixel_scale)) => {
+            get_extent_from_tiepoint(&tiepoint, &pixel_scale, width, height)
+        }
+        _ => Err(CogError::MissingGeospatialInfo(path)),
+    }
+}
+
+/// Calculate the extent [minx, miny, maxx, maxy] using model transformation matrix
+#[allow(clippy::cast_lossless)]
+fn get_extent_from_transform(
+    transform: &[f64],
+    width: u32,
+    height: u32,
+) -> Result<[f64; 4], CogError> {
+    // ModelTransformationTag should have at least 12 values for a 3x4 matrix
+    if transform.len() < 12 {
+        return Err(CogError::InvalidModelTransformation(transform.len()));
+    }
+
+    let corners = [
+        (0.0, 0.0),
+        (0.0, height as f64),
+        (width as f64, 0.0),
+        (width as f64, height as f64),
+    ];
+
+    let mut xs = Vec::with_capacity(4);
+    let mut ys = Vec::with_capacity(4);
+
+    // Apply transformation matrix to each corner
+    for (i, j) in corners {
+        let x = transform[3] + (transform[0] * i) + (transform[1] * j);
+        let y = transform[7] + (transform[4] * i) + (transform[5] * j);
+        xs.push(x);
+        ys.push(y);
+    }
+
+    Ok([
+        *xs.iter().min_by(|a, b| a.total_cmp(b)).unwrap(),
+        *ys.iter().min_by(|a, b| a.total_cmp(b)).unwrap(),
+        *xs.iter().max_by(|a, b| a.total_cmp(b)).unwrap(),
+        *ys.iter().max_by(|a, b| a.total_cmp(b)).unwrap(),
+    ])
+}
+
+/// Calculate the extent [minx, miny, maxx, maxy] using model tiepoint and pixel scale
+#[allow(clippy::cast_lossless)]
+fn get_extent_from_tiepoint(
+    tiepoint: &[f64],
+    pixel_scale: &[f64],
+    width: u32,
+    height: u32,
+) -> Result<[f64; 4], CogError> {
+    // ModelTiepointTag should have at least 6 values (I,J,K,X,Y,Z)
+    if tiepoint.len() < 6 {
+        return Err(CogError::InvalidModelTiepoint(tiepoint.len()));
+    }
+
+    // ModelPixelScaleTag should have 3 values (ScaleX, ScaleY, ScaleZ)
+    if pixel_scale.len() < 3 {
+        return Err(CogError::InvalidModelPixelScale(pixel_scale.len()));
+    }
+
+    let x1 = tiepoint[3]; // Origin X
+    let y1 = tiepoint[4]; // Origin Y
+
+    // Calculate max extent using resolution/pixel scale
+    let x2 = x1 + (pixel_scale[0] * width as f64);
+    let y2 = y1 + (pixel_scale[1] * height as f64);
+
+    Ok([x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2)])
+}
 fn get_grid_dims(
     decoder: &mut Decoder<File>,
     path: &Path,
