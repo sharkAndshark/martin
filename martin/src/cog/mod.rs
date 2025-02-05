@@ -372,6 +372,7 @@ fn google_stuffs(
         };
     let google_compatible_min_zoom =
         google_compatible_max_zoom.map(|google_max_zoom| google_max_zoom - max_zoom + min_zoom);
+    // google zoom to actual zoom_level
     let zoom_mapping = |zoom: u8| -> Option<u8> {
         let result = if let Some(google_max) = google_compatible_max_zoom {
             Some(max_zoom - google_max + zoom)
@@ -390,38 +391,27 @@ fn google_stuffs(
     let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
 
     let mut first_xy = HashMap::new();
-    for z in min_zoom..max_zoom {
-        let first_tile_center = get_first_tile_center_coords(
-            model_transformation.as_deref(),
-            model_tiepoint.as_deref(),
-            pixel_scale.as_deref(),
-            chunk_size,
-            path.clone(),
-            z,
-        )?;
-
-        let google_xy = get_tile_coords(
-            first_tile_center.0,
-            first_tile_center.1,
-            google_compatible_max_zoom.unwrap() as u32,
-        );
-        let google_zoom = zoom_mapping(z).ok_or_else(|| {
+    for google_z in google_compatible_min_zoom.unwrap()..google_compatible_max_zoom.unwrap()
+    {
+        let actual_zoom = zoom_mapping(google_z).ok_or_else(|| {
             CogError::ZoomOutOfRange(
-                z,
+                google_z,
                 path.clone(),
                 google_compatible_min_zoom.unwrap(),
                 google_compatible_max_zoom.unwrap(),
             )
         })?;
-        first_xy.insert(z, google_xy);
+        let chunk_size_current = chunk_size * 2_u32.pow(max_zoom as u32 - actual_zoom as u32);
+        let first_tile_center = get_first_tile_center_coords(
+            model_transformation.as_deref(),
+            model_tiepoint.as_deref(),
+            pixel_scale.as_deref(),
+            chunk_size_current,
+            path.clone(),
+        )?;
+        let tile_idx = get_tile_coords(first_tile_center.0, first_tile_center.1, google_z as u32);
+        first_xy.insert(actual_zoom, tile_idx);
     }
-    let xy_mapping = |zoom: u8, x: u32, y: u32| -> Option<(u32, u32)> {
-        let (first_x, first_y) = first_xy.get(&zoom)?;
-        let (google_x, google_y) = get_tile_coords(*first_x, *first_y, google_compatible_max_zoom?);
-        let new_x = google_x + x;
-        let new_y = google_y + y;
-        Some((new_x, new_y))
-    };
     todo!()
 }
 
@@ -429,13 +419,10 @@ pub fn get_first_tile_center_coords(
     model_transformation: Option<&[f64]>,
     model_tiepoint: Option<&[f64]>,
     pixel_scale: Option<&[f64]>,
-    chunk_size: u32,
+    tile_size: u32,
     path: PathBuf,
-    zoom: u8, // Add zoom parameter
 ) -> Result<(f64, f64), CogError> {
-    let zoom_factor = 2_u32.pow(zoom as u32);
-    let tile_size = chunk_size as f64 / zoom_factor as f64;
-
+    let tile_size = tile_size as f64;
     let (x, y) = if let Some(transform) = model_transformation {
         // Using model transformation
         let center_x = transform[0] + (tile_size / 2.0) * transform[1];
