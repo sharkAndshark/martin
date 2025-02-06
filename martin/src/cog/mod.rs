@@ -3,6 +3,7 @@ mod errors;
 pub use errors::CogError;
 use log::warn;
 use regex::Regex;
+use tiff::TiffResult;
 
 use std::arch::x86_64;
 use std::collections::HashMap;
@@ -312,7 +313,7 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     } else {
         None
     };
-
+    let gdal_metadata = decoder.get_tag_ascii_string(Tag::Unknown(42112));
     let images_ifd = get_images_ifd(&mut decoder, path);
 
     for (idx, image_ifd) in images_ifd.iter().enumerate() {
@@ -332,7 +333,9 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     if images_ifd.is_empty() {
         Err(CogError::NoImagesFound(path.clone()))?;
     }
-
+    let min_zoom = 0;
+    let max_zoom = images_ifd.len() as u8 - 1;
+    let google_zooms = get_google_zoom_range(min_zoom, max_zoom, gdal_metadata);
     Ok(Meta {
         min_zoom: 0,
         max_zoom: images_ifd.len() as u8 - 1,
@@ -343,21 +346,20 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
 }
 
 fn get_google_zoom_range(
-    actual_min_zoom: u8,
-    actual_max_zoom: u8,
-    decoder: &mut Decoder<File>,
-    path: &PathBuf,
+    actual_min: u8,
+    actual_max: u8,
+    gdal_metadata: TiffResult<String>,
 ) -> Option<(u8, u8)> {
     let mut result = None;
-    if let Ok(gdal_metadata) = decoder.get_tag_ascii_string(Tag::Unknown(42112)) {
+    if let Ok(gdal_metadata) = gdal_metadata {
         let re_name =
             Regex::new(r#"<Item name="NAME" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
         let re_zoom =
             Regex::new(r#"<Item name="ZOOM_LEVEL" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
 
-        let mut tiling_schema_name = None;
+        let mut tiling_schema = None;
         if let Some(caps) = re_name.captures(&gdal_metadata) {
-            tiling_schema_name = Some(caps[1].to_string());
+            tiling_schema = Some(caps[1].to_string());
         }
 
         let mut zoom_level: Option<u8> = None;
@@ -366,8 +368,8 @@ fn get_google_zoom_range(
         }
 
         if let Some(zoom) = zoom_level {
-            if tiling_schema_name == Some("GoogleMapsCompatible".to_string()) {
-                let google_min = zoom - actual_max_zoom + actual_min_zoom;
+            if tiling_schema == Some("GoogleMapsCompatible".to_string()) {
+                let google_min = zoom - actual_max + actual_min;
                 result = Some((zoom, google_min));
             }
         }
