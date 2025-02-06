@@ -28,6 +28,8 @@ use crate::{
     MartinResult, Source, TileData, UrlQuery,
 };
 
+pub const EARTH_CIRCUMFERENCE: f64 = 40_075_016.685_578_5;
+
 #[derive(Clone, Debug)]
 pub struct CogSource {
     id: String,
@@ -409,12 +411,21 @@ fn google_stuffs(
             chunk_size_current,
             path.clone(),
         )?;
-        let tile_idx = get_tile_coords(first_tile_center.0, first_tile_center.1, google_z as u32);
+        let tile_idx = tile_index(first_tile_center.0, first_tile_center.1, google_z);
         first_xy.insert(actual_zoom, tile_idx);
     }
     todo!()
 }
-
+/// Convert web mercator x and y to tile index for a given zoom
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_sign_loss)]
+pub fn tile_index(x: f64, y: f64, zoom: u8) -> (u32, u32) {
+    let tile_size = EARTH_CIRCUMFERENCE / f64::from(1_u32 << zoom);
+    let col = (((x - (EARTH_CIRCUMFERENCE * -0.5)).abs() / tile_size) as u32).min((1 << zoom) - 1);
+    let row = ((((EARTH_CIRCUMFERENCE * 0.5) - y).abs() / tile_size) as u32).min((1 << zoom) - 1);
+    (col, row)
+}
 pub fn get_first_tile_center_coords(
     model_transformation: Option<&[f64]>,
     model_tiepoint: Option<&[f64]>,
@@ -454,177 +465,6 @@ pub fn get_first_tile_center_coords(
     Ok((x, y))
 }
 
-fn get_tile_coords(coord_x: f64, coord_y: f64, zoom: u32) -> (u32, u32) {
-    const EARTH_RADIUS_PI: f64 = 20037508.34;
-    let num_tiles = 2_u32.pow(zoom) as f64;
-    let tile_size = (2.0 * EARTH_RADIUS_PI) / num_tiles;
-
-    let x_tile = ((coord_x + EARTH_RADIUS_PI) / tile_size).floor() as u32;
-    let y_tile = ((EARTH_RADIUS_PI - coord_y) / tile_size).floor() as u32;
-
-    (x_tile, y_tile)
-}
-
-fn get_origin(
-    model_transformation: Option<&[f64]>,
-    model_tiepoint: Option<&[f64]>,
-    path: &PathBuf,
-) -> Result<[f64; 3], CogError> {
-    match (model_transformation, model_tiepoint) {
-        (Some(transform), _) => {
-            if transform.len() < 12 {
-                return Err(CogError::InvalidModelTransformation(transform.len()));
-            }
-            Ok([transform[3], transform[7], transform[11]])
-        }
-        (None, Some(tiepoint)) => {
-            if tiepoint.len() < 6 {
-                return Err(CogError::InvalidModelTiepoint(tiepoint.len()));
-            }
-            Ok([tiepoint[3], tiepoint[4], tiepoint[5]])
-        }
-        (None, None) => Err(CogError::CannotDetermineOrigin(path.clone())),
-    }
-}
-
-#[derive(Debug)]
-struct ReferenceImage {
-    width: u32,
-    height: u32,
-    resolution: [f64; 3],
-}
-
-fn get_resolution(
-    model_pixel_scale: Option<&[f64]>,
-    model_transformation: Option<&[f64]>,
-    reference: Option<&ReferenceImage>,
-    width: u32,
-    height: u32,
-    path: &PathBuf,
-) -> Result<[f64; 3], CogError> {
-    if let Some(pixel_scale) = model_pixel_scale {
-        if pixel_scale.len() < 3 {
-            return Err(CogError::InvalidModelPixelScale(pixel_scale.len()));
-        }
-        return Ok([pixel_scale[0], -pixel_scale[1], pixel_scale[2]]);
-    }
-
-    if let Some(transform) = model_transformation {
-        if transform.len() < 12 {
-            return Err(CogError::InvalidModelTransformation(transform.len()));
-        }
-
-        // Check if matrix is axis-aligned (no rotation)
-        if transform[1] == 0.0 && transform[4] == 0.0 {
-            return Ok([transform[0], -transform[5], transform[10]]);
-        }
-
-        // Calculate magnitude of transformation vectors for rotated case
-        let res_x = (transform[0] * transform[0] + transform[4] * transform[4]).sqrt();
-        let res_y = -((transform[1] * transform[1] + transform[5] * transform[5]).sqrt());
-        let res_z = transform[10];
-
-        return Ok([res_x, res_y, res_z]);
-    }
-
-    if let Some(ref_img) = reference {
-        if ref_img.width == 0 || ref_img.height == 0 {
-            return Err(CogError::InvalidReferenceImageDimensions(path.clone()));
-        }
-
-        // Calculate relative resolution based on reference image
-        let res_x = ref_img.resolution[0] * (ref_img.width as f64) / (width as f64);
-        let res_y = ref_img.resolution[1] * (ref_img.height as f64) / (height as f64);
-        let res_z = ref_img.resolution[2] * (ref_img.width as f64) / (width as f64);
-
-        return Ok([res_x, res_y, res_z]);
-    }
-
-    Err(CogError::CannotDetermineResolution(path.clone()))
-}
-
-fn get_extent(
-    model_transformation: Option<Vec<f64>>,
-    model_tiepoint: Option<Vec<f64>>,
-    pixel_scale: Option<Vec<f64>>,
-    width: u32,
-    height: u32,
-    path: PathBuf,
-) -> Result<[f64; 4], CogError> {
-    match (model_transformation, model_tiepoint, pixel_scale) {
-        (Some(transform), _, _) => get_extent_from_transform(&transform, width, height),
-        (None, Some(tiepoint), Some(pixel_scale)) => {
-            get_extent_from_tiepoint(&tiepoint, &pixel_scale, width, height)
-        }
-        _ => Err(CogError::MissingGeospatialInfo(path)),
-    }
-}
-
-/// Calculate the extent [minx, miny, maxx, maxy] using model transformation matrix
-#[allow(clippy::cast_lossless)]
-fn get_extent_from_transform(
-    transform: &[f64],
-    width: u32,
-    height: u32,
-) -> Result<[f64; 4], CogError> {
-    // ModelTransformationTag should have at least 12 values for a 3x4 matrix
-    if transform.len() < 12 {
-        return Err(CogError::InvalidModelTransformation(transform.len()));
-    }
-
-    let corners = [
-        (0.0, 0.0),
-        (0.0, height as f64),
-        (width as f64, 0.0),
-        (width as f64, height as f64),
-    ];
-
-    let mut xs = Vec::with_capacity(4);
-    let mut ys = Vec::with_capacity(4);
-
-    // Apply transformation matrix to each corner
-    for (i, j) in corners {
-        let x = transform[3] + (transform[0] * i) + (transform[1] * j);
-        let y = transform[7] + (transform[4] * i) + (transform[5] * j);
-        xs.push(x);
-        ys.push(y);
-    }
-
-    Ok([
-        *xs.iter().min_by(|a, b| a.total_cmp(b)).unwrap(),
-        *ys.iter().min_by(|a, b| a.total_cmp(b)).unwrap(),
-        *xs.iter().max_by(|a, b| a.total_cmp(b)).unwrap(),
-        *ys.iter().max_by(|a, b| a.total_cmp(b)).unwrap(),
-    ])
-}
-
-/// Calculate the extent [minx, miny, maxx, maxy] using model tiepoint and pixel scale
-#[allow(clippy::cast_lossless)]
-fn get_extent_from_tiepoint(
-    tiepoint: &[f64],
-    pixel_scale: &[f64],
-    width: u32,
-    height: u32,
-) -> Result<[f64; 4], CogError> {
-    // ModelTiepointTag should have at least 6 values (I,J,K,X,Y,Z)
-    if tiepoint.len() < 6 {
-        return Err(CogError::InvalidModelTiepoint(tiepoint.len()));
-    }
-
-    // ModelPixelScaleTag should have 3 values (ScaleX, ScaleY, ScaleZ)
-    if pixel_scale.len() < 3 {
-        return Err(CogError::InvalidModelPixelScale(pixel_scale.len()));
-    }
-
-    let x1 = tiepoint[3]; // Origin X
-    let y1 = tiepoint[4]; // Origin Y
-
-    // Calculate max extent using resolution/pixel scale
-    let x2 = x1 + (pixel_scale[0] * width as f64);
-    let y2 = y1 + (pixel_scale[1] * height as f64);
-
-    Ok([x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2)])
-}
 fn get_grid_dims(
     decoder: &mut Decoder<File>,
     path: &Path,
