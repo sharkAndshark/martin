@@ -342,6 +342,39 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     })
 }
 
+fn get_google_zoom_range(
+    actual_min_zoom: u8,
+    actual_max_zoom: u8,
+    decoder: &mut Decoder<File>,
+    path: &PathBuf,
+) -> Option<(u8, u8)> {
+    let mut result = None;
+    if let Ok(gdal_metadata) = decoder.get_tag_ascii_string(Tag::Unknown(42112)) {
+        let re_name =
+            Regex::new(r#"<Item name="NAME" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
+        let re_zoom =
+            Regex::new(r#"<Item name="ZOOM_LEVEL" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
+
+        let mut tiling_schema_name = None;
+        if let Some(caps) = re_name.captures(&gdal_metadata) {
+            tiling_schema_name = Some(caps[1].to_string());
+        }
+
+        let mut zoom_level: Option<u8> = None;
+        if let Some(caps) = re_zoom.captures(&gdal_metadata) {
+            zoom_level = caps[1].parse().ok();
+        }
+
+        if let Some(zoom) = zoom_level {
+            if tiling_schema_name == Some("GoogleMapsCompatible".to_string()) {
+                let google_min = zoom - actual_max_zoom + actual_min_zoom;
+                result = Some((zoom, google_min));
+            }
+        }
+    }
+    result
+}
+
 fn google_stuffs(
     min_zoom: u8,
     max_zoom: u8,
@@ -349,88 +382,90 @@ fn google_stuffs(
     chunk_size: u32,
     path: &PathBuf,
 ) -> Result<(), CogError> {
-    let gdal_metadata = decoder
-        .get_tag_ascii_string(Tag::Unknown(42112))
-        .map_err(|e| CogError::TagsNotFound(e, vec![42112], 0, PathBuf::new()))?;
+    if let Ok(gdal_metadata) = decoder.get_tag_ascii_string(Tag::Unknown(42112)) {
+        let mut tiling_schema_name = None;
+        let mut zoom_level: Option<u8> = None;
 
-    let mut tiling_schema_name = None;
-    let mut zoom_level: Option<u8> = None;
+        let re_name =
+            Regex::new(r#"<Item name="NAME" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
+        let re_zoom =
+            Regex::new(r#"<Item name="ZOOM_LEVEL" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
 
-    let re_name = Regex::new(r#"<Item name="NAME" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
-    let re_zoom =
-        Regex::new(r#"<Item name="ZOOM_LEVEL" domain="TILING_SCHEME">([^<]+)</Item>"#).unwrap();
-
-    if let Some(caps) = re_name.captures(&gdal_metadata) {
-        tiling_schema_name = Some(caps[1].to_string());
-    }
-
-    if let Some(caps) = re_zoom.captures(&gdal_metadata) {
-        zoom_level = caps[1].parse().ok();
-    }
-
-    let google_compatible_max_zoom =
-        if tiling_schema_name == Some("GoogleMapsCompatible".to_string()) {
-            zoom_level
-        } else {
-            None
-        };
-    let google_compatible_min_zoom =
-        google_compatible_max_zoom.map(|google_max_zoom| google_max_zoom - max_zoom + min_zoom);
-    // google zoom to actual zoom_level
-    let zoom_mapping = |zoom: u8| -> Option<u8> {
-        let result = if let Some(google_max) = google_compatible_max_zoom {
-            Some(max_zoom - google_max + zoom)
-        } else {
-            None
-        };
-        if result.is_some_and(|v| v < min_zoom || v > max_zoom) {
-            None
-        } else {
-            result
+        if let Some(caps) = re_name.captures(&gdal_metadata) {
+            tiling_schema_name = Some(caps[1].to_string());
         }
-    };
 
-    let model_transformation = decoder.get_tag_f64_vec(Tag::ModelTransformationTag).ok();
-    let model_tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag).ok();
-    let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
+        if let Some(caps) = re_zoom.captures(&gdal_metadata) {
+            zoom_level = caps[1].parse().ok();
+        }
 
-    let mut first_xy = HashMap::new();
-    for google_z in google_compatible_min_zoom.unwrap()..google_compatible_max_zoom.unwrap() {
-        let actual_zoom = zoom_mapping(google_z).ok_or_else(|| {
-            CogError::ZoomOutOfRange(
-                google_z,
+        let google_compatible_max_zoom =
+            if tiling_schema_name == Some("GoogleMapsCompatible".to_string()) {
+                zoom_level
+            } else {
+                None
+            };
+        let google_compatible_min_zoom =
+            google_compatible_max_zoom.map(|google_max_zoom| google_max_zoom - max_zoom + min_zoom);
+        // google zoom to actual zoom_level
+        let zoom_mapping = |zoom: u8| -> Option<u8> {
+            let result = if let Some(google_max) = google_compatible_max_zoom {
+                Some(max_zoom - google_max + zoom)
+            } else {
+                None
+            };
+            if result.is_some_and(|v| v < min_zoom || v > max_zoom) {
+                None
+            } else {
+                result
+            }
+        };
+
+        let model_transformation = decoder.get_tag_f64_vec(Tag::ModelTransformationTag).ok();
+        let model_tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag).ok();
+        let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
+
+        let mut first_xy = HashMap::new();
+        for google_z in google_compatible_min_zoom.unwrap()..google_compatible_max_zoom.unwrap() {
+            let actual_zoom = zoom_mapping(google_z).ok_or_else(|| {
+                CogError::ZoomOutOfRange(
+                    google_z,
+                    path.clone(),
+                    google_compatible_min_zoom.unwrap(),
+                    google_compatible_max_zoom.unwrap(),
+                )
+            })?;
+            let chunk_size_current = chunk_size * 2_u32.pow(max_zoom as u32 - actual_zoom as u32);
+            let first_tile_center = get_first_tile_center_coords(
+                model_transformation.as_deref(),
+                model_tiepoint.as_deref(),
+                pixel_scale.as_deref(),
+                chunk_size_current,
                 path.clone(),
-                google_compatible_min_zoom.unwrap(),
-                google_compatible_max_zoom.unwrap(),
-            )
-        })?;
-        let chunk_size_current = chunk_size * 2_u32.pow(max_zoom as u32 - actual_zoom as u32);
-        let first_tile_center = get_first_tile_center_coords(
-            model_transformation.as_deref(),
-            model_tiepoint.as_deref(),
-            pixel_scale.as_deref(),
-            chunk_size_current,
-            path.clone(),
-        )?;
-        let tile_idx = tile_index(first_tile_center.0, first_tile_center.1, google_z);
-        first_xy.insert(actual_zoom, tile_idx);
+            )?;
+            let tile_idx = tile_index(first_tile_center.0, first_tile_center.1, google_z);
+            first_xy.insert(actual_zoom, tile_idx);
+        }
+        let mapping = |zxy: TileCoord| -> Result<(u8, u32, u8), CogError> {
+            let inner_zoom = zoom_mapping(zxy.z).ok_or_else(|| {
+                CogError::ZoomOutOfRange(
+                    zxy.z,
+                    path.clone(),
+                    google_compatible_min_zoom.unwrap(),
+                    google_compatible_max_zoom.unwrap(),
+                )
+            })?;
+            let google_xy_of_0_0 = first_xy
+                .get(&inner_zoom)
+                .ok_or_else(|| CogError::FirstTileNotFound(inner_zoom, path.clone()))?;
+            let inner_x = zxy.x - google_xy_of_0_0.0;
+            let inner_y = google_xy_of_0_0.1 - zxy.y;
+            Ok((inner_zoom, inner_x, inner_zoom))
+        };
+    } else {
+        todo!()
     }
-    let mapping = |zxy: TileCoord| -> Result<(u8, u32, u8), CogError> {
-        let inner_zoom = zoom_mapping(zxy.z).ok_or_else(|| {
-            CogError::ZoomOutOfRange(
-                zxy.z,
-                path.clone(),
-                google_compatible_min_zoom.unwrap(),
-                google_compatible_max_zoom.unwrap(),
-            )
-        })?;
-        let google_xy_of_0_0 = first_xy
-            .get(&inner_zoom)
-            .ok_or_else(|| CogError::FirstTileNotFound(inner_zoom, path.clone()))?;
-        let inner_x = zxy.x - google_xy_of_0_0.0;
-        let inner_y = google_xy_of_0_0.1 - zxy.y;
-        Ok((inner_zoom, inner_x, inner_zoom))
-    };
+
     todo!()
 }
 /// Convert web mercator x and y to tile index for a given zoom
