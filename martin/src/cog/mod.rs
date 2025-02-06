@@ -314,6 +314,10 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
         None
     };
     let gdal_metadata = decoder.get_tag_ascii_string(Tag::Unknown(42112));
+    let model_transformation = decoder.get_tag_f64_vec(Tag::ModelTransformationTag).ok();
+    let model_tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag).ok();
+    let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
+
     let images_ifd = get_images_ifd(&mut decoder, path);
 
     for (idx, image_ifd) in images_ifd.iter().enumerate() {
@@ -335,7 +339,7 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     }
     let min_zoom = 0;
     let max_zoom = images_ifd.len() as u8 - 1;
-    let google_zooms = get_google_zoom_range(min_zoom, max_zoom, gdal_metadata);
+    let google_zooms = to_google_zoom_range(min_zoom, max_zoom, gdal_metadata);
     Ok(Meta {
         min_zoom: 0,
         max_zoom: images_ifd.len() as u8 - 1,
@@ -345,7 +349,97 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     })
 }
 
-fn get_google_zoom_range(
+fn get_google_mapping(
+    actual_min_zoom: u8,
+    actual_max_zoom: u8,
+    google_min_zoom: u8,
+    google_max_zoom: u8,
+    chunk_size: u32,
+    model_transformation: Option<Vec<f64>>,
+    model_tiepoint: Option<Vec<f64>>,
+    pixel_scale: Option<Vec<f64>>,
+    path: PathBuf,
+) -> Result<impl Fn(TileCoord) -> Result<TileCoord, CogError>, CogError> {
+    let to_actual_zoom = move |zoom: u8| actual_max_zoom - google_max_zoom + zoom;
+
+    let mut idxs = HashMap::new();
+    for google_z in google_min_zoom..google_max_zoom {
+        let actual_z = to_actual_zoom(google_z);
+        let size_related = chunk_size * 2_u32.pow(actual_max_zoom as u32 - actual_z as u32);
+        let center_pixel = (size_related as f64 / 2.0, size_related as f64 / 2.0);
+        let center_xy = pixel_to_model(
+            model_transformation.as_deref(),
+            model_tiepoint.as_deref(),
+            pixel_scale.as_deref(),
+            center_pixel.0,
+            center_pixel.1,
+            path.clone(),
+        )?;
+
+        let tile_idx = tile_index(center_xy.0, center_xy.1, google_z);
+        idxs.insert(actual_z, tile_idx);
+    }
+
+    let mapping = move |zxy: TileCoord| -> Result<TileCoord, CogError> {
+        if zxy.z < google_min_zoom || zxy.z > google_max_zoom {
+            return Err(CogError::ZoomOutOfRange(
+                zxy.z,
+                path.clone(),
+                google_min_zoom,
+                google_max_zoom,
+            ));
+        }
+        let inner_zoom = to_actual_zoom(zxy.z);
+        let idx_of_first = idxs.get(&inner_zoom).ok_or_else(|| {
+            CogError::ZoomOutOfRange(zxy.z, path.clone(), google_min_zoom, google_max_zoom)
+        })?;
+        let inner_x = zxy.x - idx_of_first.0;
+        let inner_y = zxy.y - idx_of_first.1;
+        Ok(TileCoord {
+            z: inner_zoom,
+            x: inner_x,
+            y: inner_y,
+        })
+    };
+
+    Ok(mapping)
+}
+pub fn pixel_to_model(
+    model_transformation: Option<&[f64]>,
+    model_tiepoint: Option<&[f64]>,
+    pixel_scale: Option<&[f64]>,
+    i: f64,
+    j: f64,
+    path: PathBuf,
+) -> Result<(f64, f64), CogError> {
+    let (x, y) = if let Some(transform) = model_transformation {
+        let a = transform[0];
+        let b = transform[1];
+        let d = transform[3];
+        let e = transform[4];
+        let f = transform[5];
+        let h = transform[7];
+        // Using model transformation
+        let center_x = d + (a * i) + (b * j);
+        let center_y = h + (e * i) + (f * j);
+        (center_x, center_y)
+    } else if let (Some(tiepoint), Some(scale)) = (model_tiepoint, pixel_scale) {
+        // Using tiepoint and pixel scale
+        let scale_x = scale[0];
+        let scale_y = scale[1];
+        let tx = tiepoint[3];
+        let ty = tiepoint[4];
+        let center_x = tx + i * scale_x;
+        let center_y = ty - j * scale_y;
+        (center_x, center_y)
+    } else {
+        //todo help me generate error
+        return Err(CogError::MissingGeospatialInfo(path));
+    };
+
+    Ok((x, y))
+}
+fn to_google_zoom_range(
     actual_min: u8,
     actual_max: u8,
     gdal_metadata: TiffResult<String>,
