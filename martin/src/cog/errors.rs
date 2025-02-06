@@ -63,4 +63,6 @@ pub enum CogError {
 
     #[error("Invalid reference image dimensions for the file: {0}")]
     InvalidReferenceImageDimensions(PathBuf),
+    #[error("First tile not found at zoom level {0} in file {1}")]
+    FirstTileNotFound(u8, PathBuf),
 }

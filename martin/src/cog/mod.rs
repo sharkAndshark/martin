@@ -4,6 +4,7 @@ pub use errors::CogError;
 use log::warn;
 use regex::Regex;
 
+use std::arch::x86_64;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
@@ -414,6 +415,22 @@ fn google_stuffs(
         let tile_idx = tile_index(first_tile_center.0, first_tile_center.1, google_z);
         first_xy.insert(actual_zoom, tile_idx);
     }
+    let mapping = |zxy: TileCoord| -> Result<(u8, u32, u8), CogError> {
+        let inner_zoom = zoom_mapping(zxy.z).ok_or_else(|| {
+            CogError::ZoomOutOfRange(
+                zxy.z,
+                path.clone(),
+                google_compatible_min_zoom.unwrap(),
+                google_compatible_max_zoom.unwrap(),
+            )
+        })?;
+        let google_xy_of_0_0 = first_xy
+            .get(&inner_zoom)
+            .ok_or_else(|| CogError::FirstTileNotFound(inner_zoom, path.clone()))?;
+        let inner_x = zxy.x - google_xy_of_0_0.0;
+        let inner_y = google_xy_of_0_0.1 - zxy.y;
+        Ok((inner_zoom, inner_x, inner_zoom))
+    };
     todo!()
 }
 /// Convert web mercator x and y to tile index for a given zoom
