@@ -21,6 +21,7 @@ use tilejson::{tilejson, TileJSON};
 use url::Url;
 
 use crate::file_config::FileError;
+use crate::TileSources;
 use crate::{
     config::UnrecognizedValues,
     file_config::{ConfigExtras, FileResult, SourceConfigExtras},
@@ -423,15 +424,28 @@ pub fn get_first_tile_center_coords(
     path: PathBuf,
 ) -> Result<(f64, f64), CogError> {
     let tile_size = tile_size as f64;
+    let i = tile_size / 2.0;
+    let j = tile_size / 2.0;
+
     let (x, y) = if let Some(transform) = model_transformation {
+        let a = transform[0];
+        let b = transform[1];
+        let d = transform[3];
+        let e = transform[4];
+        let f = transform[5];
+        let h = transform[7];
         // Using model transformation
-        let center_x = transform[0] + (tile_size / 2.0) * transform[1];
-        let center_y = transform[3] + (tile_size / 2.0) * transform[5];
+        let center_x = d + (a * i) + (b * j);
+        let center_y = h + (e * i) + (f * j);
         (center_x, center_y)
     } else if let (Some(tiepoint), Some(scale)) = (model_tiepoint, pixel_scale) {
         // Using tiepoint and pixel scale
-        let center_x = tiepoint[3] + (tile_size / 2.0) * scale[0];
-        let center_y = tiepoint[4] - (tile_size / 2.0) * scale[1];
+        let scale_x = scale[0];
+        let scale_y = scale[1];
+        let tx = tiepoint[3];
+        let ty = tiepoint[4];
+        let center_x = tx + i  * scale_x;
+        let center_y = ty - j * scale_y;
         (center_x, center_y)
     } else {
         //todo help me generate error
