@@ -5,7 +5,6 @@ use log::warn;
 use regex::Regex;
 use tiff::TiffResult;
 
-use std::arch::x86_64;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
@@ -23,7 +22,6 @@ use tilejson::{tilejson, TileJSON};
 use url::Url;
 
 use crate::file_config::FileError;
-use crate::TileSources;
 use crate::{
     config::UnrecognizedValues,
     file_config::{ConfigExtras, FileResult, SourceConfigExtras},
@@ -66,7 +64,7 @@ struct Meta {
     max_zoom: u8,
     zoom_and_ifd: HashMap<u8, usize>,
     zoom_and_tile_across_down: HashMap<u8, (u32, u32)>,
-    google_compatible: Option<GoogleCompatiblity>,
+    google_compatiblity: Option<GoogleCompatiblity>,
     nodata: Option<f64>,
 }
 #[derive(Clone, Debug)]
@@ -82,13 +80,17 @@ impl GoogleCompatiblity {
     pub fn to_actual_zxy(&self, zxy: TileCoord) -> Option<TileCoord> {
         let actual_zoom = self.to_actual_zoom(zxy.z);
         let idx_of_first = self.idxs.get(&actual_zoom);
-        if idx_of_first.is_none() {
-            return None;
-        };
-        let actual_x = zxy.x - idx_of_first.0;
-        let actual_y = zxy.y - idx_of_first.1;
-
-        todo!()
+        if let Some(idx) = idx_of_first {
+            let actual_x = zxy.x - idx.0;
+            let actual_y = zxy.y - idx.1;
+            Some(TileCoord {
+                z: actual_zoom,
+                x: actual_x,
+                y: actual_y,
+            })
+        } else {
+            None
+        }
     }
 }
 #[async_trait]
@@ -335,6 +337,8 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     } else {
         None
     };
+
+    let chunk_size = decoder.chunk_dimensions().0;
     let gdal_metadata = decoder.get_tag_ascii_string(Tag::Unknown(42112));
     let model_transformation = decoder.get_tag_f64_vec(Tag::ModelTransformationTag).ok();
     let model_tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag).ok();
@@ -361,18 +365,37 @@ fn get_meta(path: &PathBuf) -> Result<Meta, FileError> {
     }
     let min_zoom = 0;
     let max_zoom = images_ifd.len() as u8 - 1;
+    let mut google = None;
     let google_zooms = to_google_zoom_range(min_zoom, max_zoom, gdal_metadata);
+    if let Some(google_zoom) = google_zooms {
+        let idxs = get_google_mapping(
+            max_zoom,
+            google_zoom.0,
+            google_zoom.1,
+            chunk_size,
+            model_transformation,
+            model_tiepoint,
+            pixel_scale,
+            path.clone(),
+        )?;
+
+        google = Some(GoogleCompatiblity {
+            actual_zoom: (min_zoom, max_zoom),
+            google_zoom: google_zoom,
+            idxs,
+        });
+    }
     Ok(Meta {
         min_zoom: 0,
         max_zoom: images_ifd.len() as u8 - 1,
         zoom_and_ifd,
         zoom_and_tile_across_down,
+        google_compatiblity: google,
         nodata,
     })
 }
 
 fn get_google_mapping(
-    actual_min_zoom: u8,
     actual_max_zoom: u8,
     google_min_zoom: u8,
     google_max_zoom: u8,
@@ -381,7 +404,7 @@ fn get_google_mapping(
     model_tiepoint: Option<Vec<f64>>,
     pixel_scale: Option<Vec<f64>>,
     path: PathBuf,
-) -> Result<impl Fn(TileCoord) -> Result<TileCoord, CogError>, CogError> {
+) -> Result<HashMap<u8, (u32, u32)>, CogError> {
     let to_actual_zoom = move |zoom: u8| actual_max_zoom - google_max_zoom + zoom;
 
     let mut idxs = HashMap::new();
@@ -402,29 +425,7 @@ fn get_google_mapping(
         idxs.insert(actual_z, tile_idx);
     }
 
-    let mapping = move |zxy: TileCoord| -> Result<TileCoord, CogError> {
-        if zxy.z < google_min_zoom || zxy.z > google_max_zoom {
-            return Err(CogError::ZoomOutOfRange(
-                zxy.z,
-                path.clone(),
-                google_min_zoom,
-                google_max_zoom,
-            ));
-        }
-        let inner_zoom = to_actual_zoom(zxy.z);
-        let idx_of_first = idxs.get(&inner_zoom).ok_or_else(|| {
-            CogError::ZoomOutOfRange(zxy.z, path.clone(), google_min_zoom, google_max_zoom)
-        })?;
-        let inner_x = zxy.x - idx_of_first.0;
-        let inner_y = zxy.y - idx_of_first.1;
-        Ok(TileCoord {
-            z: inner_zoom,
-            x: inner_x,
-            y: inner_y,
-        })
-    };
-
-    Ok(mapping)
+    Ok(idxs)
 }
 pub fn pixel_to_model(
     model_transformation: Option<&[f64]>,
