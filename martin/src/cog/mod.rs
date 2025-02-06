@@ -66,9 +66,31 @@ struct Meta {
     max_zoom: u8,
     zoom_and_ifd: HashMap<u8, usize>,
     zoom_and_tile_across_down: HashMap<u8, (u32, u32)>,
+    google_compatible: Option<GoogleCompatiblity>,
     nodata: Option<f64>,
 }
+#[derive(Clone, Debug)]
+struct GoogleCompatiblity {
+    actual_zoom: (u8, u8),
+    google_zoom: (u8, u8),
+    idxs: HashMap<u8, (u32, u32)>,
+}
+impl GoogleCompatiblity {
+    fn to_actual_zoom(&self, google_zoom: u8) -> u8 {
+        self.actual_zoom.1 - self.google_zoom.1 + google_zoom
+    }
+    pub fn to_actual_zxy(&self, zxy: TileCoord) -> Option<TileCoord> {
+        let actual_zoom = self.to_actual_zoom(zxy.z);
+        let idx_of_first = self.idxs.get(&actual_zoom);
+        if idx_of_first.is_none() {
+            return None;
+        };
+        let actual_x = zxy.x - idx_of_first.0;
+        let actual_y = zxy.y - idx_of_first.1;
 
+        todo!()
+    }
+}
 #[async_trait]
 impl Source for CogSource {
     fn get_id(&self) -> &str {
