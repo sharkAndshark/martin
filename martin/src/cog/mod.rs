@@ -392,8 +392,7 @@ fn google_stuffs(
     let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag).ok();
 
     let mut first_xy = HashMap::new();
-    for google_z in google_compatible_min_zoom.unwrap()..google_compatible_max_zoom.unwrap()
-    {
+    for google_z in google_compatible_min_zoom.unwrap()..google_compatible_max_zoom.unwrap() {
         let actual_zoom = zoom_mapping(google_z).ok_or_else(|| {
             CogError::ZoomOutOfRange(
                 google_z,
@@ -444,7 +443,7 @@ pub fn get_first_tile_center_coords(
         let scale_y = scale[1];
         let tx = tiepoint[3];
         let ty = tiepoint[4];
-        let center_x = tx + i  * scale_x;
+        let center_x = tx + i * scale_x;
         let center_y = ty - j * scale_y;
         (center_x, center_y)
     } else {
