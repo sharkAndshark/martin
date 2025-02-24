@@ -67,7 +67,7 @@ pprof = { version = "0.14", features = ["flamegraph", "criterion"] }
 pretty_assertions = "1"
 regex = "1"
 rstest = "0.23"
-rustls = "0.23.20"
+rustls = "0.23.23"
 # ring feature does not require NASM windows executable, but works slower
 #rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "ring"] }
 rustls-native-certs = "0.8"
@@ -80,11 +80,11 @@ serde_yaml = "0.9"
 size_format = "1.0.2"
 spreet = { version = "0.11", default-features = false }
 sqlite-compressions = { version = "0.2.16", default-features = false, features = ["bsdiffraw", "gzip"] }
-sqlite-hashes = { version = "0.7.6", default-features = false, features = ["md5", "aggregate", "hex"] }
+sqlite-hashes = { version = "0.7.9", default-features = false, features = ["md5", "aggregate", "hex"] }
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio"] }
 static-files = "0.2"
 subst = { version = "0.3", features = ["yaml"] }
-testcontainers-modules = { version = "0.11.4", features = ["postgres"] }
+testcontainers-modules = { version = "0.11.6", features = ["postgres"] }
 thiserror = "2"
 tiff = "0.9.1"
 tile-grid = "0.6"
